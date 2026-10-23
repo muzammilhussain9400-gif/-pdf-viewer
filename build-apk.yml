@@ -1,0 +1,971 @@
+# PDF Viewer APK builder.
+# This ONE file contains the whole Android app. GitHub builds it and publishes the APK.
+name: Build PDF Viewer APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Prepare Android SDK
+        run: |
+          SDKM=$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Create the app project files
+        run: |
+          mkdir -p app app/src/main app/src/main/java/com/example/pdfviewer app/src/main/res/drawable
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "PdfViewer"
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.example.pdfviewer'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'com.example.pdfviewer'
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@drawable/ic_launcher"
+                  android:label="PDF Viewer"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density|fontScale">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.BROWSABLE" />
+                          <data android:mimeType="application/pdf" />
+                      </intent-filter>
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.BROWSABLE" />
+                          <data android:scheme="file" />
+                          <data android:scheme="content" />
+                          <data android:host="*" />
+                          <data android:mimeType="*/*" />
+                          <data android:pathPattern=".*\\.pdf" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#D32F2F"
+                  android:pathData="M0,0h108v108h-108z" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M34,24h28l14,14v46h-42z" />
+              <path
+                  android:fillColor="#D32F2F"
+                  android:pathData="M62,24l14,14h-14z" />
+              <path
+                  android:fillColor="#D32F2F"
+                  android:pathData="M42,56h24v4h-24z M42,66h24v4h-24z M42,76h16v4h-16z" />
+          </vector>
+          EOF
+          cat > app/src/main/java/com/example/pdfviewer/MainActivity.java <<'EOF'
+          package com.example.pdfviewer;
+
+          import android.app.Activity;
+          import android.content.ActivityNotFoundException;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.Button;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class MainActivity extends Activity implements PdfView.Listener {
+
+              private static final int REQUEST_PICK_PDF = 1;
+
+              private PdfView pdfView;
+              private LinearLayout panel;
+              private TextView message;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  FrameLayout root = new FrameLayout(this);
+                  root.setBackgroundColor(0xFF2B2B2B);
+
+                  pdfView = new PdfView(this);
+                  root.addView(pdfView, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  panel = new LinearLayout(this);
+                  panel.setOrientation(LinearLayout.VERTICAL);
+                  panel.setGravity(Gravity.CENTER_HORIZONTAL);
+                  int pad = dp(24);
+                  panel.setPadding(pad, pad, pad, pad);
+
+                  message = new TextView(this);
+                  message.setTextColor(0xFFFFFFFF);
+                  message.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                  message.setGravity(Gravity.CENTER);
+                  message.setText("No PDF opened");
+                  panel.addView(message, new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                  Button openButton = new Button(this);
+                  openButton.setText("Open PDF");
+                  openButton.setOnClickListener(v -> pickPdf());
+                  LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  buttonParams.topMargin = dp(16);
+                  panel.addView(openButton, buttonParams);
+
+                  root.addView(panel, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                          Gravity.CENTER));
+                  setContentView(root);
+
+                  Intent intent = getIntent();
+                  Uri uri = intent == null ? null : intent.getData();
+                  if (uri != null) {
+                      openPdf(uri);
+                  } else if (savedInstanceState == null) {
+                      pickPdf();
+                  }
+              }
+
+              private int dp(int value) {
+                  return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+              }
+
+              private void pickPdf() {
+                  Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                  intent.addCategory(Intent.CATEGORY_OPENABLE);
+                  intent.setType("application/pdf");
+                  try {
+                      startActivityForResult(intent, REQUEST_PICK_PDF);
+                  } catch (ActivityNotFoundException e) {
+                      message.setText("No file picker found on this phone");
+                      panel.setVisibility(View.VISIBLE);
+                  }
+              }
+
+              private void openPdf(Uri uri) {
+                  panel.setVisibility(View.GONE);
+                  pdfView.open(uri, this);
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == REQUEST_PICK_PDF && resultCode == RESULT_OK
+                          && data != null && data.getData() != null) {
+                      openPdf(data.getData());
+                  }
+              }
+
+              @Override
+              public void onLoaded() {
+                  panel.setVisibility(View.GONE);
+              }
+
+              @Override
+              public void onError() {
+                  message.setText("This PDF could not be opened.\nIt may be damaged or password-protected.");
+                  panel.setVisibility(View.VISIBLE);
+              }
+
+              @Override
+              protected void onDestroy() {
+                  pdfView.close();
+                  super.onDestroy();
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/example/pdfviewer/PdfView.java <<'EOF'
+          package com.example.pdfviewer;
+
+          import android.animation.Animator;
+          import android.animation.AnimatorListenerAdapter;
+          import android.animation.ValueAnimator;
+          import android.content.Context;
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Matrix;
+          import android.graphics.Paint;
+          import android.graphics.RectF;
+          import android.graphics.pdf.PdfRenderer;
+          import android.net.Uri;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.ParcelFileDescriptor;
+          import android.util.LruCache;
+          import android.view.GestureDetector;
+          import android.view.MotionEvent;
+          import android.view.ScaleGestureDetector;
+          import android.view.View;
+          import android.widget.OverScroller;
+
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.util.ArrayList;
+          import java.util.HashSet;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+
+          /**
+           * Shows all pages of a PDF in one vertical, scrollable, zoomable column.
+           *
+           * Layout units: every page is scaled to the view width at zoom 1. A layout point (lx, ly)
+           * is drawn at screen position (lx * zoom + tx, ly * zoom + ty).
+           *
+           * Two layers are drawn: a base bitmap per page (view width, always available) and sharp
+           * "detail" bitmaps of just the visible part when zoomed in (rendered after movement stops).
+           */
+          public class PdfView extends View {
+
+              public interface Listener {
+                  void onLoaded();
+
+                  void onError();
+              }
+
+              private static final float MAX_ZOOM = 5f;
+              private static final float DOUBLE_TAP_ZOOM = 2.5f;
+              private static final float MAX_BITMAP_PIXELS = 12000000f;
+              private static final int BACKGROUND = 0xFF2B2B2B;
+
+              private static class Detail {
+                  final int page;
+                  final float x0, y0, x1, y1; // region in page-local layout units
+                  final Bitmap bitmap;
+
+                  Detail(int page, float x0, float y0, float x1, float y1, Bitmap bitmap) {
+                      this.page = page;
+                      this.x0 = x0;
+                      this.y0 = y0;
+                      this.x1 = x1;
+                      this.y1 = y1;
+                      this.bitmap = bitmap;
+                  }
+              }
+
+              private final Object lock = new Object();
+              private final ExecutorService worker = Executors.newSingleThreadExecutor();
+              private final Handler ui = new Handler(Looper.getMainLooper());
+              private final Paint bitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+              private final Paint whitePaint = new Paint();
+              private final RectF dst = new RectF();
+              private final LruCache<Integer, Bitmap> baseCache;
+              private final HashSet<Integer> baseRequested = new HashSet<>();
+              private final ArrayList<Detail> details = new ArrayList<>();
+              private final OverScroller scroller;
+              private final ScaleGestureDetector scaleDetector;
+              private final GestureDetector gestureDetector;
+              private final float gap;
+              private final Runnable detailRunnable = this::requestDetail;
+
+              // Used by the worker thread only, guarded by lock.
+              private PdfRenderer renderer;
+              private ParcelFileDescriptor pfd;
+              private File tempFile;
+
+              private volatile boolean destroyed;
+              private volatile int generation;
+              private volatile int detailVersion;
+              private volatile int wantFirst;
+              private volatile int wantLast;
+
+              private Listener listener;
+              private int pageCount;
+              private float[] pagePtsW;
+              private float[] pagePtsH;
+              private float[] pageTop;
+              private float[] pageH;
+              private float totalH;
+              private int viewW;
+              private int viewH;
+              private float zoom = 1f;
+              private float tx;
+              private float ty;
+              private boolean scaledThisGesture;
+              private ValueAnimator animator;
+
+              public PdfView(Context context) {
+                  super(context);
+                  gap = 8f * context.getResources().getDisplayMetrics().density;
+                  whitePaint.setColor(Color.WHITE);
+                  long maxMemory = Runtime.getRuntime().maxMemory();
+                  baseCache = new LruCache<Integer, Bitmap>((int) Math.min(maxMemory / 5, 200L * 1024 * 1024)) {
+                      @Override
+                      protected int sizeOf(Integer key, Bitmap value) {
+                          return value.getByteCount();
+                      }
+                  };
+                  scroller = new OverScroller(context);
+                  scaleDetector = new ScaleGestureDetector(context, new ScaleListener());
+                  scaleDetector.setQuickScaleEnabled(false);
+                  gestureDetector = new GestureDetector(context, new TapScrollListener());
+                  gestureDetector.setIsLongpressEnabled(false);
+              }
+
+              // ---------------------------------------------------------------- loading
+
+              public void open(final Uri uri, Listener l) {
+                  listener = l;
+                  pageCount = 0;
+                  generation++;
+                  baseCache.evictAll();
+                  baseRequested.clear();
+                  details.clear();
+                  invalidate();
+                  final int gen = generation;
+
+                  worker.execute(() -> {
+                      closeCurrent();
+                      PdfRenderer r = null;
+                      ParcelFileDescriptor d = null;
+                      File temp = null;
+                      try {
+                          // First try to open the file directly.
+                          try {
+                              d = getContext().getContentResolver().openFileDescriptor(uri, "r");
+                              if (d != null) {
+                                  r = new PdfRenderer(d);
+                              }
+                          } catch (SecurityException e) {
+                              throw e;
+                          } catch (Exception e) {
+                              r = null;
+                              closeQuietly(d);
+                              d = null;
+                          }
+
+                          // Some apps hand over streams that cannot be seeked: copy to a temp file.
+                          if (r == null) {
+                              temp = File.createTempFile("pdf", ".pdf", getContext().getCacheDir());
+                              try (InputStream in = getContext().getContentResolver().openInputStream(uri);
+                                   OutputStream out = new FileOutputStream(temp)) {
+                                  if (in == null) {
+                                      throw new IOException("Cannot read file");
+                                  }
+                                  byte[] buffer = new byte[65536];
+                                  int read;
+                                  while ((read = in.read(buffer)) != -1) {
+                                      out.write(buffer, 0, read);
+                                  }
+                              }
+                              d = ParcelFileDescriptor.open(temp, ParcelFileDescriptor.MODE_READ_ONLY);
+                              r = new PdfRenderer(d);
+                          }
+
+                          int count = r.getPageCount();
+                          if (count <= 0) {
+                              throw new IOException("Empty PDF");
+                          }
+                          final float[] w = new float[count];
+                          final float[] h = new float[count];
+                          for (int i = 0; i < count; i++) {
+                              PdfRenderer.Page page = r.openPage(i);
+                              w[i] = page.getWidth() > 0 ? page.getWidth() : 612f;
+                              h[i] = page.getHeight() > 0 ? page.getHeight() : 792f;
+                              page.close();
+                          }
+                          synchronized (lock) {
+                              renderer = r;
+                              pfd = d;
+                              tempFile = temp;
+                          }
+                          ui.post(() -> onDocumentReady(gen, w, h));
+                      } catch (Throwable e) {
+                          try {
+                              if (r != null) {
+                                  r.close();
+                              }
+                          } catch (Exception ignored) {
+                          }
+                          closeQuietly(d);
+                          if (temp != null) {
+                              temp.delete();
+                          }
+                          ui.post(() -> {
+                              if (!destroyed && gen == generation && listener != null) {
+                                  listener.onError();
+                              }
+                          });
+                      }
+                  });
+              }
+
+              private void onDocumentReady(int gen, float[] w, float[] h) {
+                  if (destroyed || gen != generation) {
+                      return;
+                  }
+                  pagePtsW = w;
+                  pagePtsH = h;
+                  pageCount = w.length;
+                  pageTop = new float[pageCount];
+                  pageH = new float[pageCount];
+                  zoom = 1f;
+                  tx = 0f;
+                  ty = 0f;
+                  if (viewW > 0) {
+                      relayout(0f);
+                  }
+                  if (listener != null) {
+                      listener.onLoaded();
+                  }
+                  invalidate();
+              }
+
+              public void close() {
+                  destroyed = true;
+                  ui.removeCallbacksAndMessages(null);
+                  if (animator != null) {
+                      animator.cancel();
+                  }
+                  worker.execute(this::closeCurrent);
+                  worker.shutdown();
+              }
+
+              private void closeCurrent() {
+                  synchronized (lock) {
+                      try {
+                          if (renderer != null) {
+                              renderer.close();
+                          }
+                      } catch (Exception ignored) {
+                      }
+                      renderer = null;
+                      closeQuietly(pfd);
+                      pfd = null;
+                      if (tempFile != null) {
+                          tempFile.delete();
+                          tempFile = null;
+                      }
+                  }
+              }
+
+              private static void closeQuietly(ParcelFileDescriptor d) {
+                  if (d != null) {
+                      try {
+                          d.close();
+                      } catch (IOException ignored) {
+                      }
+                  }
+              }
+
+              // ----------------------------------------------------------------- layout
+
+              @Override
+              protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+                  super.onSizeChanged(w, h, oldw, oldh);
+                  float fraction = 0f;
+                  if (pageCount > 0 && totalH > 0f) {
+                      fraction = (-ty / zoom) / totalH;
+                  }
+                  boolean widthChanged = w != viewW;
+                  viewW = w;
+                  viewH = h;
+                  if (pageCount > 0) {
+                      if (widthChanged) {
+                          relayout(fraction);
+                      } else {
+                          clampOffsets();
+                          scheduleDetail();
+                      }
+                  }
+              }
+
+              private void relayout(float fractionY) {
+                  generation++;
+                  detailVersion++;
+                  baseCache.evictAll();
+                  baseRequested.clear();
+                  details.clear();
+                  float top = 0f;
+                  for (int i = 0; i < pageCount; i++) {
+                      pageH[i] = pagePtsH[i] * viewW / pagePtsW[i];
+                      pageTop[i] = top;
+                      top += pageH[i] + gap;
+                  }
+                  totalH = top - gap;
+                  zoom = 1f;
+                  tx = 0f;
+                  ty = -fractionY * totalH;
+                  clampOffsets();
+                  invalidate();
+              }
+
+              private void clampOffsets() {
+                  float contentW = viewW * zoom;
+                  float contentH = totalH * zoom;
+                  tx = Math.max(Math.min(0f, viewW - contentW), Math.min(0f, tx));
+                  if (contentH <= viewH) {
+                      ty = (viewH - contentH) / 2f;
+                  } else {
+                      ty = Math.max(viewH - contentH, Math.min(0f, ty));
+                  }
+              }
+
+              /** Index of the page that contains (or is the last one starting above) layout y. */
+              private int findPage(float layoutY) {
+                  int lo = 0;
+                  int hi = pageCount - 1;
+                  while (lo < hi) {
+                      int mid = (lo + hi + 1) >>> 1;
+                      if (pageTop[mid] <= layoutY) {
+                          lo = mid;
+                      } else {
+                          hi = mid - 1;
+                      }
+                  }
+                  return lo;
+              }
+
+              // ---------------------------------------------------------------- drawing
+
+              @Override
+              protected void onDraw(Canvas canvas) {
+                  canvas.drawColor(BACKGROUND);
+                  if (pageCount == 0 || viewW == 0) {
+                      return;
+                  }
+                  float z = zoom;
+                  int first = findPage(-ty / z);
+                  int last = findPage((viewH - ty) / z);
+
+                  for (int i = first; i <= last; i++) {
+                      dst.set(tx, pageTop[i] * z + ty, tx + viewW * z, (pageTop[i] + pageH[i]) * z + ty);
+                      Bitmap bitmap = baseCache.get(i);
+                      if (bitmap != null) {
+                          canvas.drawBitmap(bitmap, null, dst, bitmapPaint);
+                      } else {
+                          canvas.drawRect(dst, whitePaint);
+                      }
+                  }
+
+                  for (int k = 0; k < details.size(); k++) {
+                      Detail d = details.get(k);
+                      float pageScreenTop = pageTop[d.page] * z + ty;
+                      dst.set(d.x0 * z + tx, pageScreenTop + d.y0 * z, d.x1 * z + tx, pageScreenTop + d.y1 * z);
+                      if (dst.bottom < 0 || dst.top > viewH) {
+                          continue;
+                      }
+                      canvas.drawBitmap(d.bitmap, null, dst, bitmapPaint);
+                  }
+
+                  requestBase(first, last);
+              }
+
+              // -------------------------------------------------------------- rendering
+
+              private void requestBase(int first, int last) {
+                  if (destroyed) {
+                      return;
+                  }
+                  wantFirst = Math.max(0, first - 2);
+                  wantLast = Math.min(pageCount - 1, last + 2);
+                  for (int p = first; p <= last; p++) {
+                      maybeRequestBase(p);
+                  }
+                  if (last + 1 < pageCount) {
+                      maybeRequestBase(last + 1);
+                  }
+                  if (first - 1 >= 0) {
+                      maybeRequestBase(first - 1);
+                  }
+              }
+
+              private void maybeRequestBase(int p) {
+                  if (baseCache.get(p) != null || baseRequested.contains(p)) {
+                      return;
+                  }
+                  baseRequested.add(p);
+                  final int page = p;
+                  final int gen = generation;
+                  final float width = viewW;
+                  final float height = pageH[p];
+                  final float scale = viewW / pagePtsW[p];
+                  worker.execute(() -> {
+                      Bitmap result = null;
+                      if (!destroyed && gen == generation && page >= wantFirst && page <= wantLast) {
+                          result = renderRegion(page, 0f, 0f, width, height, scale, 1f);
+                      }
+                      final Bitmap finalResult = result;
+                      ui.post(() -> {
+                          baseRequested.remove(page);
+                          if (finalResult != null && !destroyed && gen == generation) {
+                              baseCache.put(page, finalResult);
+                              invalidate();
+                          }
+                      });
+                  });
+              }
+
+              private void scheduleDetail() {
+                  ui.removeCallbacks(detailRunnable);
+                  ui.postDelayed(detailRunnable, 150);
+              }
+
+              /** Renders sharp bitmaps of the visible part of the pages while zoomed in. */
+              private void requestDetail() {
+                  if (destroyed || pageCount == 0 || viewW == 0) {
+                      return;
+                  }
+                  final int version = ++detailVersion;
+                  if (zoom <= 1.05f) {
+                      if (!details.isEmpty()) {
+                          details.clear();
+                          invalidate();
+                      }
+                      return;
+                  }
+                  final int gen = generation;
+                  final float z = zoom;
+                  float vx0 = -tx / z;
+                  float vx1 = (viewW - tx) / z;
+                  float vy0 = -ty / z;
+                  float vy1 = (viewH - ty) / z;
+                  float marginX = (vx1 - vx0) * 0.15f;
+                  float marginY = (vy1 - vy0) * 0.15f;
+                  float cx0 = Math.max(0f, vx0 - marginX);
+                  float cx1 = Math.min((float) viewW, vx1 + marginX);
+                  float cy0 = vy0 - marginY;
+                  float cy1 = vy1 + marginY;
+                  int first = findPage(cy0);
+                  int last = findPage(cy1);
+
+                  // Each job: page, x0, y0, x1, y1, pixels per PDF point at zoom 1
+                  final ArrayList<float[]> jobs = new ArrayList<>();
+                  for (int i = first; i <= last; i++) {
+                      float y0 = Math.max(0f, cy0 - pageTop[i]);
+                      float y1 = Math.min(pageH[i], cy1 - pageTop[i]);
+                      if (y1 - y0 < 1f || cx1 - cx0 < 1f) {
+                          continue;
+                      }
+                      jobs.add(new float[]{i, cx0, y0, cx1, y1, viewW / pagePtsW[i]});
+                  }
+
+                  worker.execute(() -> {
+                      ArrayList<Detail> out = new ArrayList<>();
+                      for (float[] j : jobs) {
+                          if (destroyed || version != detailVersion || gen != generation) {
+                              return;
+                          }
+                          int page = (int) j[0];
+                          Bitmap bitmap = renderRegion(page, j[1], j[2], j[3], j[4], j[5], z);
+                          if (bitmap != null) {
+                              out.add(new Detail(page, j[1], j[2], j[3], j[4], bitmap));
+                          }
+                      }
+                      ui.post(() -> {
+                          if (destroyed || version != detailVersion || gen != generation) {
+                              return;
+                          }
+                          details.clear();
+                          details.addAll(out);
+                          invalidate();
+                      });
+                  });
+              }
+
+              /**
+               * Renders the layout region (x0,y0)-(x1,y1) of one page at the given zoom.
+               * Runs on the worker thread.
+               */
+              private Bitmap renderRegion(int page, float x0, float y0, float x1, float y1,
+                                          float scale, float z) {
+                  float bw = (x1 - x0) * z;
+                  float bh = (y1 - y0) * z;
+                  float q = 1f;
+                  float pixels = bw * bh;
+                  if (pixels > MAX_BITMAP_PIXELS) {
+                      q = (float) Math.sqrt(MAX_BITMAP_PIXELS / pixels);
+                  }
+                  int w = Math.max(1, Math.round(bw * q));
+                  int h = Math.max(1, Math.round(bh * q));
+                  Bitmap bitmap;
+                  try {
+                      bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                  } catch (OutOfMemoryError e) {
+                      return null;
+                  }
+                  bitmap.eraseColor(Color.WHITE);
+                  synchronized (lock) {
+                      if (destroyed || renderer == null) {
+                          return null;
+                      }
+                      PdfRenderer.Page p = null;
+                      try {
+                          p = renderer.openPage(page);
+                          float k = scale * z * q;
+                          Matrix matrix = new Matrix();
+                          matrix.setScale(k, k);
+                          matrix.postTranslate(-x0 * z * q, -y0 * z * q);
+                          p.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                      } catch (Exception e) {
+                          return null;
+                      } finally {
+                          if (p != null) {
+                              p.close();
+                          }
+                      }
+                  }
+                  return bitmap;
+              }
+
+              // ---------------------------------------------------------------- gestures
+
+              @Override
+              public boolean onTouchEvent(MotionEvent event) {
+                  if (pageCount == 0) {
+                      return true;
+                  }
+                  scaleDetector.onTouchEvent(event);
+                  gestureDetector.onTouchEvent(event);
+                  return true;
+              }
+
+              @Override
+              public void computeScroll() {
+                  if (scroller.computeScrollOffset()) {
+                      tx = scroller.getCurrX();
+                      ty = scroller.getCurrY();
+                      clampOffsets();
+                      scheduleDetail();
+                      postInvalidateOnAnimation();
+                  }
+              }
+
+              private void animateZoom(final float target, final float fx, final float fy) {
+                  if (animator != null) {
+                      animator.cancel();
+                  }
+                  final float z0 = zoom;
+                  final float lx = (fx - tx) / z0;
+                  final float ly = (fy - ty) / z0;
+                  animator = ValueAnimator.ofFloat(z0, target);
+                  animator.setDuration(220);
+                  animator.addUpdateListener(a -> {
+                      float z = (Float) a.getAnimatedValue();
+                      zoom = z;
+                      tx = fx - lx * z;
+                      ty = fy - ly * z;
+                      clampOffsets();
+                      invalidate();
+                  });
+                  animator.addListener(new AnimatorListenerAdapter() {
+                      @Override
+                      public void onAnimationEnd(Animator a) {
+                          scheduleDetail();
+                      }
+                  });
+                  animator.start();
+              }
+
+              private class ScaleListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
+                  @Override
+                  public boolean onScaleBegin(ScaleGestureDetector detector) {
+                      scaledThisGesture = true;
+                      scroller.forceFinished(true);
+                      if (animator != null) {
+                          animator.cancel();
+                      }
+                      return true;
+                  }
+
+                  @Override
+                  public boolean onScale(ScaleGestureDetector detector) {
+                      float newZoom = Math.max(1f, Math.min(MAX_ZOOM, zoom * detector.getScaleFactor()));
+                      float f = newZoom / zoom;
+                      float fx = detector.getFocusX();
+                      float fy = detector.getFocusY();
+                      tx = fx - (fx - tx) * f;
+                      ty = fy - (fy - ty) * f;
+                      zoom = newZoom;
+                      clampOffsets();
+                      scheduleDetail();
+                      invalidate();
+                      return true;
+                  }
+
+                  @Override
+                  public void onScaleEnd(ScaleGestureDetector detector) {
+                      scheduleDetail();
+                  }
+              }
+
+              private class TapScrollListener extends GestureDetector.SimpleOnGestureListener {
+                  @Override
+                  public boolean onDown(MotionEvent e) {
+                      scaledThisGesture = false;
+                      scroller.forceFinished(true);
+                      if (animator != null) {
+                          animator.cancel();
+                      }
+                      return true;
+                  }
+
+                  @Override
+                  public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
+                      tx -= distanceX;
+                      ty -= distanceY;
+                      clampOffsets();
+                      scheduleDetail();
+                      invalidate();
+                      return true;
+                  }
+
+                  @Override
+                  public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                      if (scaledThisGesture) {
+                          return false;
+                      }
+                      float contentW = viewW * zoom;
+                      float contentH = totalH * zoom;
+                      int minX = (int) Math.min(0f, viewW - contentW);
+                      int minY;
+                      int maxY;
+                      if (contentH <= viewH) {
+                          minY = (int) ty;
+                          maxY = (int) ty;
+                      } else {
+                          minY = (int) (viewH - contentH);
+                          maxY = 0;
+                      }
+                      scroller.fling((int) tx, (int) ty, (int) velocityX, (int) velocityY,
+                              minX, 0, minY, maxY);
+                      postInvalidateOnAnimation();
+                      return true;
+                  }
+
+                  @Override
+                  public boolean onDoubleTapEvent(MotionEvent e) {
+                      if (e.getAction() == MotionEvent.ACTION_UP) {
+                          animateZoom(zoom > 1.05f ? 1f : DOUBLE_TAP_ZOOM, e.getX(), e.getY());
+                      }
+                      return true;
+                  }
+              }
+          }
+          EOF
+
+      - name: Build the APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Keep APK as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Viewer-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish APK as a downloadable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk PDF-Viewer.apk
+          gh release create "apk-${{ github.run_number }}" PDF-Viewer.apk \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "PDF Viewer APK (build ${{ github.run_number }})" \
+            --notes "Tap PDF-Viewer.apk below to download it, then open it to install."
